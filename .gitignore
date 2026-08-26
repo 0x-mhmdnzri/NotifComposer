@@ -20,15 +20,18 @@ bld/
 *.db-shm
 *.db-wal
 
+## Secrets
+.env
+.env.local
+*.pfx
+*.pem
+
 ## IDE
 .vs/
 .vscode/
 .idea/
 *.swp
 *~
-
-## Docker
-**/.dockerignore
 
 ## OS
 .DS_Store

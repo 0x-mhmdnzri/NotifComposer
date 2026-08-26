@@ -1,18 +1,22 @@
 version: '3.8'
 
+# Postgres ports are NOT published to the host (only on app-network).
+# gRPC is internal-only (no host mapping for 8081).
+# Set strong values via environment / .env before any non-local use.
+
 services:
   identity-db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-appuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ChangeMe_UseStrongPassword_9fK2!}
       POSTGRES_DB: identitydb
     volumes:
       - identity_data:/var/lib/postgresql/data
     networks:
       - app-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-appuser}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -20,15 +24,15 @@ services:
   employee-db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-appuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ChangeMe_UseStrongPassword_9fK2!}
       POSTGRES_DB: employeedb
     volumes:
       - employee_data:/var/lib/postgresql/data
     networks:
       - app-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-appuser}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -36,15 +40,15 @@ services:
   notification-db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-appuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ChangeMe_UseStrongPassword_9fK2!}
       POSTGRES_DB: notificationdb
     volumes:
       - notification_data:/var/lib/postgresql/data
     networks:
       - app-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-appuser}"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -61,8 +65,7 @@ services:
       - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
       - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
       - ALLOW_PLAINTEXT_LISTENER=yes
-    ports:
-      - "9092:9092"
+    # Kafka not published to host by default (internal only)
     networks:
       - app-network
     healthcheck:
@@ -76,13 +79,15 @@ services:
       context: ./src/IdentityService
       dockerfile: Dockerfile
     environment:
-      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
       ASPNETCORE_URLS: http://+:8080
-      # Pooling: Min/Max reduce connection setup latency under load; Timeout bounds wait
-      ConnectionStrings__DefaultConnection: Host=identity-db;Port=5432;Database=identitydb;Username=postgres;Password=postgres;Pooling=true;Minimum Pool Size=2;Maximum Pool Size=50;Timeout=5;Command Timeout=5
+      ConnectionStrings__DefaultConnection: Host=identity-db;Port=5432;Database=identitydb;Username=${POSTGRES_USER:-appuser};Password=${POSTGRES_PASSWORD:-ChangeMe_UseStrongPassword_9fK2!};Pooling=true;Minimum Pool Size=2;Maximum Pool Size=50;Timeout=5;Command Timeout=5
+      Security__ApiKeys: ${API_KEY:-dev-api-key-change-me-in-production}
+      Security__AllowedOrigins: ${ALLOWED_ORIGINS:-}
+      Swagger__Enabled: ${SWAGGER_ENABLED:-true}
     ports:
       - "5001:8080"
-      - "5002:8081"
+      # gRPC intentionally NOT published to host — only reachable as identity-service:8081 on app-network
     depends_on:
       identity-db:
         condition: service_healthy
@@ -94,12 +99,15 @@ services:
       context: ./src/EmployeeService
       dockerfile: Dockerfile
     environment:
-      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
       ASPNETCORE_URLS: http://+:8080
-      ConnectionStrings__DefaultConnection: Host=employee-db;Port=5432;Database=employeedb;Username=postgres;Password=postgres;Pooling=true;Minimum Pool Size=2;Maximum Pool Size=50;Timeout=5;Command Timeout=5
+      ConnectionStrings__DefaultConnection: Host=employee-db;Port=5432;Database=employeedb;Username=${POSTGRES_USER:-appuser};Password=${POSTGRES_PASSWORD:-ChangeMe_UseStrongPassword_9fK2!};Pooling=true;Minimum Pool Size=2;Maximum Pool Size=50;Timeout=5;Command Timeout=5
       IdentityService__GrpcAddress: http://identity-service:8081
       IdentityService__TimeoutMilliseconds: "150"
       Kafka__BootstrapServers: kafka:9092
+      Security__ApiKeys: ${API_KEY:-dev-api-key-change-me-in-production}
+      Security__AllowedOrigins: ${ALLOWED_ORIGINS:-}
+      Swagger__Enabled: ${SWAGGER_ENABLED:-true}
     ports:
       - "5003:8080"
     depends_on:
@@ -117,10 +125,13 @@ services:
       context: ./src/NotificationService
       dockerfile: Dockerfile
     environment:
-      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
       ASPNETCORE_URLS: http://+:8080
-      ConnectionStrings__DefaultConnection: Host=notification-db;Port=5432;Database=notificationdb;Username=postgres;Password=postgres;Pooling=true;Minimum Pool Size=2;Maximum Pool Size=50;Timeout=5;Command Timeout=5
+      ConnectionStrings__DefaultConnection: Host=notification-db;Port=5432;Database=notificationdb;Username=${POSTGRES_USER:-appuser};Password=${POSTGRES_PASSWORD:-ChangeMe_UseStrongPassword_9fK2!};Pooling=true;Minimum Pool Size=2;Maximum Pool Size=50;Timeout=5;Command Timeout=5
       Kafka__BootstrapServers: kafka:9092
+      Security__ApiKeys: ${API_KEY:-dev-api-key-change-me-in-production}
+      Security__AllowedOrigins: ${ALLOWED_ORIGINS:-}
+      Swagger__Enabled: ${SWAGGER_ENABLED:-true}
     ports:
       - "5005:8080"
     depends_on:

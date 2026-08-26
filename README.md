@@ -1,102 +1,62 @@
 # Backend .NET Code Challenge – Employee Management Microservices
 
-Microservice system with **SOLID**, **Transactional Outbox/Inbox**, and **latency engineering** practices.
+Microservice system with **SOLID**, **Transactional Outbox/Inbox**, **latency engineering**, and **security hardening**.
+
+## Security (post security-review)
+
+Findings were filed as GitHub Issues #1–#6 and remediated as follows:
+
+| Issue | Severity | Fix |
+|-------|----------|-----|
+| #1 No authentication | Critical | API Key auth (`X-Api-Key`) on all REST controllers |
+| #2 Verbose exceptions | High | Generic 5xx messages; details only in logs |
+| #3 Weak DB credentials | High | Non-default user/password via env; `.env.example`; DB ports not published |
+| #4 No rate limiting | Medium | Fixed-window rate limits (60/min API, 20/min writes) |
+| #5 Missing headers / CORS | Medium | Security headers middleware; CORS deny-by-default |
+| #6 Public gRPC + always-on Swagger | Medium | gRPC host port removed; Swagger gated by `Swagger__Enabled` |
+
+### Calling the APIs
+
+```http
+GET http://localhost:5001/api/users
+X-Api-Key: dev-api-key-change-me-in-production
+```
+
+Default key for local docker-compose: `dev-api-key-change-me-in-production`  
+Override with env `API_KEY`. See `.env.example`.
+
+### Health
+`GET /health` remains anonymous (for orchestrators).
+
+### Remaining residual risk (documented, not fully eliminated in this challenge)
+- Traffic is HTTP (not TLS) inside/out of compose — use a reverse proxy with TLS in real deployments.
+- Kafka is plaintext on the internal network.
+- API Key is shared-secret auth (not per-user OAuth/JWT roles). Sufficient for service-to-operator protection; add OIDC/JWT for multi-tenant user auth if required.
+- gRPC between services has no mTLS (trusts Docker network boundary).
 
 ## Architecture
 
 ```
-┌─────────────────┐   gRPC + deadline (150ms)   ┌─────────────────┐
-│  Employee       │ ──────────────────────────► │  Identity       │
-│  Service        │                             │  Service        │
-└────────┬────────┘                             └─────────────────┘
-         │ Outbox (same DB txn) — NOT on critical path of caller
-         ▼
-    ┌─────────┐
-    │  Kafka  │
-    └────┬────┘
-         │ Inbox (exactly-once)
-         ▼
-┌─────────────────┐
-│  Notification   │
-│  Service        │
-└─────────────────┘
+Client --X-Api-Key--> REST APIs
+Employee --gRPC (internal only)--> Identity
+Employee --Outbox--> Kafka --Inbox--> Notification
 ```
-
-## Latency design (software-latency-engineering)
-
-Latency is treated as a **measurable delay between two points**, with a **distribution** (not a single average).
-
-### Latency budget (targets)
-
-| Path | p50 target | p99 / slow threshold | Dominant stage |
-|------|------------|----------------------|----------------|
-| Identity GET by id | &lt; 20ms | 200ms | DB lookup |
-| Identity list | &lt; 40ms | 200ms | DB + serialization |
-| Employee create | &lt; 80ms | 400ms | gRPC UserExists + DB write |
-| Employee GET | &lt; 25ms | 200ms | DB (or cache hit) |
-| Notification GET | &lt; 25ms | 200ms | DB (or cache hit) |
-
-### Measure
-
-- `LatencyMiddleware` on every service: logs duration + status; warns on requests above budget.
-- Response header `X-Response-Time-Ms` so load generators can collect percentiles without coordinated omission tricks.
-- Structured logs → aggregate to p50/p95/p99 in your log backend.
-
-### Reduce
-
-| Technique | Where |
-|-----------|--------|
-| Connection pooling + bounded CommandTimeout (5s) | All Npgsql connection strings |
-| Shared gRPC channel + HTTP/2 keep-alive | `IdentityGrpcClient` |
-| Indexes on lookup keys (UserId, Mobile, …) | EF model |
-| `AsNoTracking` on reads | Repositories |
-| Response compression (Brotli/Gzip, fastest level) | All HTTP APIs |
-| Fetch only needed rows (pagination max 100) | List endpoints |
-
-### Hide
-
-| Technique | Where | Staleness policy |
-|-----------|--------|------------------|
-| **Output cache** GET by id (30s) / list (10s) | Controllers | Evict by tag on every write |
-| **Outbox** for notification | Employee create | Caller does not wait for Notification/Kafka |
-| **gRPC deadline 150ms** | Identity check | Bounds dependency contribution to Employee create p99 |
-
-Notification delivery is **async** (eventual consistency). Employee create latency does **not** include Notification Service availability — that is intentional latency *hiding*, not reduction of the notification work itself.
-
-### How to verify improvements
-
-1. Capture baseline under load (open-loop / constant rate preferred over closed-loop):
-   ```bash
-   # Example: hey or k6 at fixed RPS; collect X-Response-Time-Ms or server logs
-   hey -z 30s -q 50 -m GET http://localhost:5001/api/users
-   ```
-2. Report **p50 / p95 / p99**, not only mean.
-3. Apply one change at a time; re-measure the same way so the metric movement is attributable.
-4. If p99 is high but p50 is fine → look at dependency timeout, pool queueing, or GC/lock spikes — not average path micro-optimizations.
 
 ## Run
 
 ```bash
+cp .env.example .env   # optional; set strong secrets
 docker compose up --build
 ```
 
-| Service | Swagger |
-|---------|---------|
-| Identity | http://localhost:5001/swagger |
-| Employee | http://localhost:5003/swagger |
-| Notification | http://localhost:5005/swagger |
+| Service | Swagger | Port |
+|---------|---------|------|
+| Identity | http://localhost:5001/swagger | 5001 |
+| Employee | http://localhost:5003/swagger | 5003 |
+| Notification | http://localhost:5005/swagger | 5005 |
+
+In Swagger UI, use **Authorize** and paste the API key.
 
 ## Stack
 
-- ASP.NET Core 8, EF Core, PostgreSQL, gRPC
-- TransactionalBox (Outbox/Inbox) + Kafka
-- FluentValidation, Serilog, Swagger
-- Output caching, response compression, latency middleware
-
-## Layering
-
-```
-Domain/ → Application/ (interfaces, services, messages, handlers) → Infrastructure/ → API/
-```
-
-SOLID + eventual consistency + explicit latency budgets.
+ASP.NET Core 8 · EF Core · PostgreSQL · gRPC · TransactionalBox + Kafka · FluentValidation · Serilog · Rate limiting · API Key auth · Output cache · Security headers

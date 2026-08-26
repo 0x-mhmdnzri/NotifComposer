@@ -5,6 +5,7 @@ using IdentityService.Application.Validators;
 using IdentityService.GrpcServices;
 using IdentityService.Infrastructure.Persistence;
 using IdentityService.Middleware;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 
@@ -17,6 +18,16 @@ try
     var builder = WebApplication.CreateBuilder(args);
 
     builder.Host.UseSerilog();
+
+    // Dual ports: 8080 HTTP, 8081 gRPC (HTTP/2)
+    builder.WebHost.ConfigureKestrel(options =>
+    {
+        options.ListenAnyIP(8080); // REST + Swagger
+        options.ListenAnyIP(8081, listenOptions =>
+        {
+            listenOptions.Protocols = HttpProtocols.Http2;
+        });
+    });
 
     // Controllers + Validation
     builder.Services.AddControllers();

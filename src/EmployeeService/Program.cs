@@ -30,7 +30,6 @@ try
     builder.Services.AddDbContext<EmployeeDbContext>(options =>
         options.UseNpgsql(connectionString));
 
-    // DIP registrations
     builder.Services.AddScoped<IEmployeeRepository, EmployeeRepository>();
     builder.Services.AddScoped<EmployeeAppService>();
 
@@ -41,15 +40,13 @@ try
     });
     builder.Services.AddSingleton<IIdentityClient, IdentityGrpcClient>();
 
-    // TransactionalBox – Outbox with EF Core storage + Kafka transport
     var kafkaBootstrap = builder.Configuration["Kafka:BootstrapServers"] ?? "localhost:9092";
 
     builder.Services.AddTransactionalBox(x =>
     {
         x.AddOutbox(
             storage => storage.UseEntityFrameworkCore<EmployeeDbContext>(),
-            transport => transport.UseKafka(s => s.BootstrapServers = kafkaBootstrap),
-            assembly: typeof(Program).Assembly);
+            transport => transport.UseKafka(settings => settings.BootstrapServers = kafkaBootstrap));
     },
     settings => settings.ServiceId = "EmployeeService");
 
@@ -64,7 +61,9 @@ try
     using (var scope = app.Services.CreateScope())
     {
         var db = scope.ServiceProvider.GetRequiredService<EmployeeDbContext>();
+        // EnsureCreated covers Outbox tables when full migrations for TB are not generated yet
         db.Database.Migrate();
+        try { db.Database.EnsureCreated(); } catch { /* already migrated */ }
     }
 
     app.UseMiddleware<ExceptionHandlingMiddleware>();

@@ -38,8 +38,7 @@ try
     {
         x.AddInbox(
             storage => storage.UseEntityFrameworkCore<NotificationDbContext>(),
-            transport => transport.UseKafka(s => s.BootstrapServers = kafkaBootstrap),
-            assembly: typeof(Program).Assembly);
+            transport => transport.UseKafka(settings => settings.BootstrapServers = kafkaBootstrap));
     },
     settings => settings.ServiceId = "NotificationService");
 
@@ -55,6 +54,7 @@ try
     {
         var db = scope.ServiceProvider.GetRequiredService<NotificationDbContext>();
         db.Database.Migrate();
+        try { db.Database.EnsureCreated(); } catch { /* already migrated */ }
     }
 
     app.UseMiddleware<ExceptionHandlingMiddleware>();

@@ -1,11 +1,13 @@
 using FluentValidation;
 using FluentValidation.AspNetCore;
 using Microsoft.EntityFrameworkCore;
+using NotificationService.Application.Interfaces;
 using NotificationService.Application.Services;
 using NotificationService.Application.Validators;
 using NotificationService.Infrastructure.Persistence;
 using NotificationService.Middleware;
 using Serilog;
+using TransactionalBox;
 
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
@@ -27,7 +29,19 @@ try
     builder.Services.AddDbContext<NotificationDbContext>(options =>
         options.UseNpgsql(connectionString));
 
+    builder.Services.AddScoped<INotificationRepository, NotificationRepository>();
     builder.Services.AddScoped<NotificationAppService>();
+
+    var kafkaBootstrap = builder.Configuration["Kafka:BootstrapServers"] ?? "localhost:9092";
+
+    builder.Services.AddTransactionalBox(x =>
+    {
+        x.AddInbox(
+            storage => storage.UseEntityFrameworkCore<NotificationDbContext>(),
+            transport => transport.UseKafka(s => s.BootstrapServers = kafkaBootstrap),
+            assembly: typeof(Program).Assembly);
+    },
+    settings => settings.ServiceId = "NotificationService");
 
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddSwaggerGen(c =>

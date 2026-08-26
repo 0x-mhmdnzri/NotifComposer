@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using NotificationService.Domain.Entities;
+using TransactionalBox.EntityFrameworkCore;
 
 namespace NotificationService.Infrastructure.Persistence;
 
@@ -24,5 +25,8 @@ public class NotificationDbContext : DbContext
             entity.HasIndex(x => x.UserId);
             entity.HasIndex(x => x.CreatedAt);
         });
+
+        // TransactionalBox Inbox tables
+        modelBuilder.AddInbox();
     }
 }

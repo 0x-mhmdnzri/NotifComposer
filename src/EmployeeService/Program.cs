@@ -6,8 +6,10 @@ using EmployeeService.Infrastructure.Persistence;
 using EmployeeService.Middleware;
 using FluentValidation;
 using FluentValidation.AspNetCore;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
+using System.IO.Compression;
 using TransactionalBox;
 
 Log.Logger = new LoggerConfiguration()
@@ -24,19 +26,38 @@ try
     builder.Services.AddFluentValidationAutoValidation();
     builder.Services.AddValidatorsFromAssemblyContaining<CreateEmployeeValidator>();
 
+    builder.Services.AddResponseCompression(options =>
+    {
+        options.EnableForHttps = true;
+        options.Providers.Add<BrotliCompressionProvider>();
+        options.Providers.Add<GzipCompressionProvider>();
+    });
+    builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+    builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+
+    builder.Services.AddOutputCache(options =>
+    {
+        options.AddBasePolicy(b => b.Expire(TimeSpan.FromSeconds(10)).Tag("employees"));
+        options.AddPolicy("EmployeeById", b => b.Expire(TimeSpan.FromSeconds(30)).SetVaryByRouteValue("id").Tag("employees"));
+    });
+
     var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
         ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is missing.");
 
     builder.Services.AddDbContext<EmployeeDbContext>(options =>
-        options.UseNpgsql(connectionString));
+        options.UseNpgsql(connectionString, npgsql =>
+        {
+            npgsql.CommandTimeout(5);
+        }));
 
     builder.Services.AddScoped<IEmployeeRepository, EmployeeRepository>();
     builder.Services.AddScoped<EmployeeAppService>();
 
     builder.Services.Configure<IdentityGrpcOptions>(options =>
     {
-        options.GrpcAddress = builder.Configuration["IdentityService:GrpcAddress"]
-            ?? "http://localhost:5002";
+        options.GrpcAddress = builder.Configuration["IdentityService:GrpcAddress"] ?? "http://localhost:5002";
+        if (int.TryParse(builder.Configuration["IdentityService:TimeoutMilliseconds"], out var t))
+            options.TimeoutMilliseconds = t;
     });
     builder.Services.AddSingleton<IIdentityClient, IdentityGrpcClient>();
 
@@ -61,12 +82,14 @@ try
     using (var scope = app.Services.CreateScope())
     {
         var db = scope.ServiceProvider.GetRequiredService<EmployeeDbContext>();
-        // EnsureCreated covers Outbox tables when full migrations for TB are not generated yet
         db.Database.Migrate();
         try { db.Database.EnsureCreated(); } catch { /* already migrated */ }
     }
 
+    app.UseMiddleware<LatencyMiddleware>();
     app.UseMiddleware<ExceptionHandlingMiddleware>();
+    app.UseResponseCompression();
+    app.UseOutputCache();
 
     if (app.Environment.IsDevelopment())
     {

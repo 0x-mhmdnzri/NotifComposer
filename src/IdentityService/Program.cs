@@ -6,9 +6,11 @@ using IdentityService.Application.Validators;
 using IdentityService.GrpcServices;
 using IdentityService.Infrastructure.Persistence;
 using IdentityService.Middleware;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
+using System.IO.Compression;
 
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
@@ -30,13 +32,33 @@ try
     builder.Services.AddFluentValidationAutoValidation();
     builder.Services.AddValidatorsFromAssemblyContaining<CreateUserValidator>();
 
+    // Response compression reduces payload transfer time on larger list responses (hide network cost)
+    builder.Services.AddResponseCompression(options =>
+    {
+        options.EnableForHttps = true;
+        options.Providers.Add<BrotliCompressionProvider>();
+        options.Providers.Add<GzipCompressionProvider>();
+    });
+    builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+    builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
+
+    // Short-lived output cache for hot read endpoints (hide repeated DB latency)
+    builder.Services.AddOutputCache(options =>
+    {
+        options.AddBasePolicy(b => b.Expire(TimeSpan.FromSeconds(10)).Tag("users"));
+        options.AddPolicy("UserById", b => b.Expire(TimeSpan.FromSeconds(30)).SetVaryByRouteValue("id").Tag("users"));
+    });
+
     var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
         ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is missing.");
 
+    // Pooling + timeouts on the connection string (reduce queueing under load)
     builder.Services.AddDbContext<IdentityDbContext>(options =>
-        options.UseNpgsql(connectionString));
+        options.UseNpgsql(connectionString, npgsql =>
+        {
+            npgsql.CommandTimeout(5); // hard bound on DB stage latency
+        }));
 
-    // DIP: depend on abstractions
     builder.Services.AddScoped<IUserRepository, UserRepository>();
     builder.Services.AddScoped<UserAppService>();
 
@@ -56,7 +78,11 @@ try
         db.Database.Migrate();
     }
 
+    // Order: latency outermost so it includes everything
+    app.UseMiddleware<LatencyMiddleware>();
     app.UseMiddleware<ExceptionHandlingMiddleware>();
+    app.UseResponseCompression();
+    app.UseOutputCache();
 
     if (app.Environment.IsDevelopment())
     {

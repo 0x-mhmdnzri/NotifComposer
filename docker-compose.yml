@@ -1,0 +1,115 @@
+version: '3.8'
+
+services:
+  identity-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: identitydb
+    volumes:
+      - identity_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  employee-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: employeedb
+    volumes:
+      - employee_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  notification-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: notificationdb
+    volumes:
+      - notification_data:/var/lib/postgresql/data
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  identity-service:
+    build:
+      context: ./src/IdentityService
+      dockerfile: Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: Host=identity-db;Port=5432;Database=identitydb;Username=postgres;Password=postgres
+      Grpc__Port: "8081"
+    ports:
+      - "5001:8080"
+      - "5002:8081"
+    depends_on:
+      identity-db:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  employee-service:
+    build:
+      context: ./src/EmployeeService
+      dockerfile: Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: Host=employee-db;Port=5432;Database=employeedb;Username=postgres;Password=postgres
+      IdentityService__GrpcAddress: http://identity-service:8081
+      NotificationService__BaseUrl: http://notification-service:8080
+    ports:
+      - "5003:8080"
+    depends_on:
+      employee-db:
+        condition: service_healthy
+      identity-service:
+        condition: service_started
+      notification-service:
+        condition: service_started
+    networks:
+      - app-network
+
+  notification-service:
+    build:
+      context: ./src/NotificationService
+      dockerfile: Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: Host=notification-db;Port=5432;Database=notificationdb;Username=postgres;Password=postgres
+    ports:
+      - "5005:8080"
+    depends_on:
+      notification-db:
+        condition: service_healthy
+    networks:
+      - app-network
+
+volumes:
+  identity_data:
+  employee_data:
+  notification_data:
+
+networks:
+  app-network:
+    driver: bridge

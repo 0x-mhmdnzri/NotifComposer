@@ -1,5 +1,6 @@
 using EmployeeService.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
+using TransactionalBox.EntityFrameworkCore;
 
 namespace EmployeeService.Infrastructure.Persistence;
 
@@ -29,5 +30,8 @@ public class EmployeeDbContext : DbContext
             entity.Property(x => x.CreatedAt).IsRequired();
             entity.Property(x => x.UpdatedAt);
         });
+
+        // TransactionalBox Outbox tables (same transaction as business data)
+        modelBuilder.AddOutbox();
     }
 }

@@ -1,3 +1,4 @@
+using EmployeeService.Application.Interfaces;
 using Grpc.Net.Client;
 using IdentityService.Grpc;
 using Microsoft.Extensions.Options;
@@ -9,7 +10,10 @@ public class IdentityGrpcOptions
     public string GrpcAddress { get; set; } = "http://localhost:5002";
 }
 
-public class IdentityGrpcClient
+/// <summary>
+/// gRPC implementation of IIdentityClient (DIP).
+/// </summary>
+public sealed class IdentityGrpcClient : IIdentityClient
 {
     private readonly UserService.UserServiceClient _client;
     private readonly ILogger<IdentityGrpcClient> _logger;

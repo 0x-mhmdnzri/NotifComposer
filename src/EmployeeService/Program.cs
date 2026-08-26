@@ -1,3 +1,4 @@
+using EmployeeService.Application.Interfaces;
 using EmployeeService.Application.Services;
 using EmployeeService.Application.Validators;
 using EmployeeService.Infrastructure.Clients;
@@ -7,6 +8,7 @@ using FluentValidation;
 using FluentValidation.AspNetCore;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
+using TransactionalBox;
 
 Log.Logger = new LoggerConfiguration()
     .WriteTo.Console()
@@ -28,23 +30,28 @@ try
     builder.Services.AddDbContext<EmployeeDbContext>(options =>
         options.UseNpgsql(connectionString));
 
-    // Identity gRPC
+    // DIP registrations
+    builder.Services.AddScoped<IEmployeeRepository, EmployeeRepository>();
+    builder.Services.AddScoped<EmployeeAppService>();
+
     builder.Services.Configure<IdentityGrpcOptions>(options =>
     {
         options.GrpcAddress = builder.Configuration["IdentityService:GrpcAddress"]
             ?? "http://localhost:5002";
     });
-    builder.Services.AddSingleton<IdentityGrpcClient>();
+    builder.Services.AddSingleton<IIdentityClient, IdentityGrpcClient>();
 
-    // Notification HTTP client
-    builder.Services.Configure<NotificationOptions>(options =>
+    // TransactionalBox – Outbox with EF Core storage + Kafka transport
+    var kafkaBootstrap = builder.Configuration["Kafka:BootstrapServers"] ?? "localhost:9092";
+
+    builder.Services.AddTransactionalBox(x =>
     {
-        options.BaseUrl = builder.Configuration["NotificationService:BaseUrl"]
-            ?? "http://localhost:5005";
-    });
-    builder.Services.AddHttpClient<NotificationHttpClient>();
-
-    builder.Services.AddScoped<EmployeeAppService>();
+        x.AddOutbox(
+            storage => storage.UseEntityFrameworkCore<EmployeeDbContext>(),
+            transport => transport.UseKafka(s => s.BootstrapServers = kafkaBootstrap),
+            assembly: typeof(Program).Assembly);
+    },
+    settings => settings.ServiceId = "EmployeeService");
 
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddSwaggerGen(c =>

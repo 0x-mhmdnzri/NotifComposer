@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OutputCaching;
 using NotificationService.Application.DTOs;
 using NotificationService.Application.Services;
 
@@ -9,24 +10,26 @@ namespace NotificationService.Controllers;
 public class NotificationsController : ControllerBase
 {
     private readonly NotificationAppService _service;
+    private readonly IOutputCacheStore _cacheStore;
 
-    public NotificationsController(NotificationAppService service)
+    public NotificationsController(NotificationAppService service, IOutputCacheStore cacheStore)
     {
         _service = service;
+        _cacheStore = cacheStore;
     }
 
-    /// <summary>Create a new notification (called by other services)</summary>
     [HttpPost]
     [ProducesResponseType(typeof(NotificationResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Create([FromBody] CreateNotificationRequest request, CancellationToken ct)
     {
         var result = await _service.CreateAsync(request, ct);
+        await _cacheStore.EvictByTagAsync("notifications", ct);
         return CreatedAtAction(nameof(GetById), new { id = result.Id }, result);
     }
 
-    /// <summary>Get notification by id</summary>
     [HttpGet("{id:guid}")]
+    [OutputCache]
     [ProducesResponseType(typeof(NotificationResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetById(Guid id, CancellationToken ct)
@@ -35,8 +38,8 @@ public class NotificationsController : ControllerBase
         return result is null ? NotFound() : Ok(result);
     }
 
-    /// <summary>Get list of notifications</summary>
     [HttpGet]
+    [OutputCache]
     [ProducesResponseType(typeof(PagedResult<NotificationResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetList(
         [FromQuery] Guid? userId,

@@ -1,22 +1,20 @@
 # Backend .NET Code Challenge – Employee Management Microservices
 
-سیستم مدیریت کارکنان با معماری **Microservice** + **SOLID** + **Transactional Outbox/Inbox** (TransactionalBox).
+Microservice system with **SOLID**, **Transactional Outbox/Inbox**, and **latency engineering** practices.
 
-## معماری
+## Architecture
 
 ```
-┌─────────────────┐     gRPC (sync)      ┌─────────────────┐
-│  Employee       │ ───────────────────► │  Identity       │
-│  Service        │                      │  Service        │
-└────────┬────────┘                      └─────────────────┘
-         │
-         │ Transactional Outbox (same DB transaction)
-         │ EmployeeCreatedEvent
+┌─────────────────┐   gRPC + deadline (150ms)   ┌─────────────────┐
+│  Employee       │ ──────────────────────────► │  Identity       │
+│  Service        │                             │  Service        │
+└────────┬────────┘                             └─────────────────┘
+         │ Outbox (same DB txn) — NOT on critical path of caller
          ▼
     ┌─────────┐
     │  Kafka  │
     └────┬────┘
-         │ Transactional Inbox (exactly-once via dedup)
+         │ Inbox (exactly-once)
          ▼
 ┌─────────────────┐
 │  Notification   │
@@ -24,72 +22,81 @@
 └─────────────────┘
 ```
 
-### اصول طراحی
+## Latency design (software-latency-engineering)
 
-| اصل | پیاده‌سازی |
-|-----|------------|
-| **SRP** | Repository / Application Service / Handler / Client جدا |
-| **DIP** | وابستگی به اینترفیس (`IEmployeeRepository`, `IIdentityClient`, ...) |
-| **ISP** | اینترفیس‌های کوچک و متمرکز |
-| **OCP** | افزودن Handler جدید بدون تغییر کد موجود |
-| **Outbox/Inbox** | `TransactionalBox` + EF Core + Kafka |
+Latency is treated as a **measurable delay between two points**, with a **distribution** (not a single average).
 
-- قبل از ایجاد کارمند، وجود User از طریق **gRPC** چک می‌شود (sync).
-- پس از ایجاد موفق کارمند، رویداد در **همان تراکنش دیتابیس** در Outbox ذخیره می‌شود.
-- Background job پیام را به Kafka می‌فرستد (at-least-once).
-- NotificationService با Inbox پیام را دریافت و با **exactly-once** (IdempotentInboxKey) پردازش می‌کند.
-- اگر Notification یا Kafka موقتاً در دسترس نباشد، ثبت کارمند **Rollback نمی‌شود**.
+### Latency budget (targets)
 
-> ⚠️ TransactionalBox هنوز به‌صورت رسمی Production-ready اعلام نشده (alpha). برای چالش کد و یادگیری مناسب است.
+| Path | p50 target | p99 / slow threshold | Dominant stage |
+|------|------------|----------------------|----------------|
+| Identity GET by id | &lt; 20ms | 200ms | DB lookup |
+| Identity list | &lt; 40ms | 200ms | DB + serialization |
+| Employee create | &lt; 80ms | 400ms | gRPC UserExists + DB write |
+| Employee GET | &lt; 25ms | 200ms | DB (or cache hit) |
+| Notification GET | &lt; 25ms | 200ms | DB (or cache hit) |
 
-## اجرا
+### Measure
+
+- `LatencyMiddleware` on every service: logs duration + status; warns on requests above budget.
+- Response header `X-Response-Time-Ms` so load generators can collect percentiles without coordinated omission tricks.
+- Structured logs → aggregate to p50/p95/p99 in your log backend.
+
+### Reduce
+
+| Technique | Where |
+|-----------|--------|
+| Connection pooling + bounded CommandTimeout (5s) | All Npgsql connection strings |
+| Shared gRPC channel + HTTP/2 keep-alive | `IdentityGrpcClient` |
+| Indexes on lookup keys (UserId, Mobile, …) | EF model |
+| `AsNoTracking` on reads | Repositories |
+| Response compression (Brotli/Gzip, fastest level) | All HTTP APIs |
+| Fetch only needed rows (pagination max 100) | List endpoints |
+
+### Hide
+
+| Technique | Where | Staleness policy |
+|-----------|--------|------------------|
+| **Output cache** GET by id (30s) / list (10s) | Controllers | Evict by tag on every write |
+| **Outbox** for notification | Employee create | Caller does not wait for Notification/Kafka |
+| **gRPC deadline 150ms** | Identity check | Bounds dependency contribution to Employee create p99 |
+
+Notification delivery is **async** (eventual consistency). Employee create latency does **not** include Notification Service availability — that is intentional latency *hiding*, not reduction of the notification work itself.
+
+### How to verify improvements
+
+1. Capture baseline under load (open-loop / constant rate preferred over closed-loop):
+   ```bash
+   # Example: hey or k6 at fixed RPS; collect X-Response-Time-Ms or server logs
+   hey -z 30s -q 50 -m GET http://localhost:5001/api/users
+   ```
+2. Report **p50 / p95 / p99**, not only mean.
+3. Apply one change at a time; re-measure the same way so the metric movement is attributable.
+4. If p99 is high but p50 is fine → look at dependency timeout, pool queueing, or GC/lock spikes — not average path micro-optimizations.
+
+## Run
 
 ```bash
 docker compose up --build
 ```
 
-| سرویس | Swagger | Port |
-|-------|---------|------|
-| Identity | http://localhost:5001/swagger | 5001 |
-| Employee | http://localhost:5003/swagger | 5003 |
-| Notification | http://localhost:5005/swagger | 5005 |
-| Kafka | localhost:9092 | 9092 |
+| Service | Swagger |
+|---------|---------|
+| Identity | http://localhost:5001/swagger |
+| Employee | http://localhost:5003/swagger |
+| Notification | http://localhost:5005/swagger |
 
-## API ها
+## Stack
 
-### Identity
-- `POST /api/users`
-- `GET /api/users/{id}`
-- `GET /api/users?search=&isActive=&page=&pageSize=`
+- ASP.NET Core 8, EF Core, PostgreSQL, gRPC
+- TransactionalBox (Outbox/Inbox) + Kafka
+- FluentValidation, Serilog, Swagger
+- Output caching, response compression, latency middleware
 
-### Employee
-- `POST /api/employees` — ایجاد + Outbox event
-- `PUT /api/employees/{id}`
-- `GET /api/employees/{id}`
-- `GET /api/employees?department=&position=&userId=&page=&pageSize=`
-- `PATCH /api/employees/{id}/preferences`
-
-### Notification
-- `POST /api/notifications` (دستی)
-- `GET /api/notifications/{id}`
-- `GET /api/notifications?userId=&page=&pageSize=`
-
-## تکنولوژی‌ها
-
-- ASP.NET Core 8
-- EF Core + PostgreSQL (Npgsql)
-- gRPC (Identity check)
-- **TransactionalBox** (Outbox/Inbox) + Kafka
-- FluentValidation
-- Serilog
-- Swagger
-- Docker Compose
-
-## ساختار لایه‌ها (هر سرویس)
+## Layering
 
 ```
-Domain/          → Entities (pure)
-Application/     → Interfaces, DTOs, Validators, Services, Messages, Handlers
-Infrastructure/  → Persistence (DbContext + Repositories), Clients (gRPC)
-API/             → Controllers, Middleware, Program.cs
+Domain/ → Application/ (interfaces, services, messages, handlers) → Infrastructure/ → API/
 ```
+
+SOLID + eventual consistency + explicit latency budgets.

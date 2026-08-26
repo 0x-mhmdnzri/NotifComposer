@@ -1,6 +1,7 @@
 using EmployeeService.Application.DTOs;
 using EmployeeService.Application.Services;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.OutputCaching;
 
 namespace EmployeeService.Controllers;
 
@@ -9,24 +10,27 @@ namespace EmployeeService.Controllers;
 public class EmployeesController : ControllerBase
 {
     private readonly EmployeeAppService _service;
+    private readonly IOutputCacheStore _cacheStore;
 
-    public EmployeesController(EmployeeAppService service)
+    public EmployeesController(EmployeeAppService service, IOutputCacheStore cacheStore)
     {
         _service = service;
+        _cacheStore = cacheStore;
     }
 
-    /// <summary>Create a new employee (checks user via gRPC first)</summary>
+    /// <summary>Create employee — path includes sync gRPC; notification is async (Outbox) so not on critical path</summary>
     [HttpPost]
     [ProducesResponseType(typeof(EmployeeResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Create([FromBody] CreateEmployeeRequest request, CancellationToken ct)
     {
         var result = await _service.CreateAsync(request, ct);
+        await _cacheStore.EvictByTagAsync("employees", ct);
         return CreatedAtAction(nameof(GetById), new { id = result.Id }, result);
     }
 
-    /// <summary>Get employee by id</summary>
     [HttpGet("{id:guid}")]
+    [OutputCache(PolicyName = "EmployeeById")]
     [ProducesResponseType(typeof(EmployeeResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> GetById(Guid id, CancellationToken ct)
@@ -35,28 +39,28 @@ public class EmployeesController : ControllerBase
         return result is null ? NotFound() : Ok(result);
     }
 
-    /// <summary>Update employee basic info</summary>
     [HttpPut("{id:guid}")]
     [ProducesResponseType(typeof(EmployeeResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateEmployeeRequest request, CancellationToken ct)
     {
         var result = await _service.UpdateAsync(id, request, ct);
+        await _cacheStore.EvictByTagAsync("employees", ct);
         return Ok(result);
     }
 
-    /// <summary>Update employee preferences (stored as jsonb)</summary>
     [HttpPatch("{id:guid}/preferences")]
     [ProducesResponseType(typeof(EmployeeResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> UpdatePreferences(Guid id, [FromBody] UpdatePreferencesRequest request, CancellationToken ct)
     {
         var result = await _service.UpdatePreferencesAsync(id, request, ct);
+        await _cacheStore.EvictByTagAsync("employees", ct);
         return Ok(result);
     }
 
-    /// <summary>Get list of employees with pagination and filtering</summary>
     [HttpGet]
+    [OutputCache]
     [ProducesResponseType(typeof(PagedResult<EmployeeResponse>), StatusCodes.Status200OK)]
     public async Task<IActionResult> GetList(
         [FromQuery] string? department,

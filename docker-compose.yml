@@ -78,7 +78,8 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
-      ConnectionStrings__DefaultConnection: Host=identity-db;Port=5432;Database=identitydb;Username=postgres;Password=postgres
+      # Pooling: Min/Max reduce connection setup latency under load; Timeout bounds wait
+      ConnectionStrings__DefaultConnection: Host=identity-db;Port=5432;Database=identitydb;Username=postgres;Password=postgres;Pooling=true;Minimum Pool Size=2;Maximum Pool Size=50;Timeout=5;Command Timeout=5
     ports:
       - "5001:8080"
       - "5002:8081"
@@ -95,8 +96,9 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
-      ConnectionStrings__DefaultConnection: Host=employee-db;Port=5432;Database=employeedb;Username=postgres;Password=postgres
+      ConnectionStrings__DefaultConnection: Host=employee-db;Port=5432;Database=employeedb;Username=postgres;Password=postgres;Pooling=true;Minimum Pool Size=2;Maximum Pool Size=50;Timeout=5;Command Timeout=5
       IdentityService__GrpcAddress: http://identity-service:8081
+      IdentityService__TimeoutMilliseconds: "150"
       Kafka__BootstrapServers: kafka:9092
     ports:
       - "5003:8080"
@@ -117,7 +119,7 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
-      ConnectionStrings__DefaultConnection: Host=notification-db;Port=5432;Database=notificationdb;Username=postgres;Password=postgres
+      ConnectionStrings__DefaultConnection: Host=notification-db;Port=5432;Database=notificationdb;Username=postgres;Password=postgres;Pooling=true;Minimum Pool Size=2;Maximum Pool Size=50;Timeout=5;Command Timeout=5
       Kafka__BootstrapServers: kafka:9092
     ports:
       - "5005:8080"

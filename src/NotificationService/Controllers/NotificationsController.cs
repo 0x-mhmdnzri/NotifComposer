@@ -1,5 +1,7 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OutputCaching;
+using Microsoft.AspNetCore.RateLimiting;
 using NotificationService.Application.DTOs;
 using NotificationService.Application.Services;
 
@@ -7,6 +9,8 @@ namespace NotificationService.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
+[EnableRateLimiting("api")]
 public class NotificationsController : ControllerBase
 {
     private readonly NotificationAppService _service;
@@ -19,8 +23,10 @@ public class NotificationsController : ControllerBase
     }
 
     [HttpPost]
+    [EnableRateLimiting("write")]
     [ProducesResponseType(typeof(NotificationResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> Create([FromBody] CreateNotificationRequest request, CancellationToken ct)
     {
         var result = await _service.CreateAsync(request, ct);

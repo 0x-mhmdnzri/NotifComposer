@@ -1,12 +1,16 @@
 using EmployeeService.Application.DTOs;
 using EmployeeService.Application.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OutputCaching;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace EmployeeService.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
+[EnableRateLimiting("api")]
 public class EmployeesController : ControllerBase
 {
     private readonly EmployeeAppService _service;
@@ -18,10 +22,11 @@ public class EmployeesController : ControllerBase
         _cacheStore = cacheStore;
     }
 
-    /// <summary>Create employee — path includes sync gRPC; notification is async (Outbox) so not on critical path</summary>
     [HttpPost]
+    [EnableRateLimiting("write")]
     [ProducesResponseType(typeof(EmployeeResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> Create([FromBody] CreateEmployeeRequest request, CancellationToken ct)
     {
         var result = await _service.CreateAsync(request, ct);
@@ -40,6 +45,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPut("{id:guid}")]
+    [EnableRateLimiting("write")]
     [ProducesResponseType(typeof(EmployeeResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateEmployeeRequest request, CancellationToken ct)
@@ -50,6 +56,7 @@ public class EmployeesController : ControllerBase
     }
 
     [HttpPatch("{id:guid}/preferences")]
+    [EnableRateLimiting("write")]
     [ProducesResponseType(typeof(EmployeeResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> UpdatePreferences(Guid id, [FromBody] UpdatePreferencesRequest request, CancellationToken ct)

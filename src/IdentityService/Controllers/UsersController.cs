@@ -1,12 +1,16 @@
 using IdentityService.Application.DTOs;
 using IdentityService.Application.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OutputCaching;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace IdentityService.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize]
+[EnableRateLimiting("api")]
 public class UsersController : ControllerBase
 {
     private readonly UserAppService _service;
@@ -18,19 +22,18 @@ public class UsersController : ControllerBase
         _cacheStore = cacheStore;
     }
 
-    /// <summary>Create a new user</summary>
     [HttpPost]
+    [EnableRateLimiting("write")]
     [ProducesResponseType(typeof(UserResponse), StatusCodes.Status201Created)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
     public async Task<IActionResult> Create([FromBody] CreateUserRequest request, CancellationToken ct)
     {
         var result = await _service.CreateAsync(request, ct);
-        // Invalidate list cache after write (correctness over stale hits)
         await _cacheStore.EvictByTagAsync("users", ct);
         return CreatedAtAction(nameof(GetById), new { id = result.Id }, result);
     }
 
-    /// <summary>Get user by id — cached 30s (hide repeated DB lookup latency)</summary>
     [HttpGet("{id:guid}")]
     [OutputCache(PolicyName = "UserById")]
     [ProducesResponseType(typeof(UserResponse), StatusCodes.Status200OK)]
@@ -41,7 +44,6 @@ public class UsersController : ControllerBase
         return result is null ? NotFound() : Ok(result);
     }
 
-    /// <summary>Get list — short TTL cache (10s base policy)</summary>
     [HttpGet]
     [OutputCache]
     [ProducesResponseType(typeof(PagedResult<UserResponse>), StatusCodes.Status200OK)]

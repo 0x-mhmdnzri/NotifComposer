@@ -1,3 +1,4 @@
+using System.Threading.RateLimiting;
 using FluentValidation;
 using FluentValidation.AspNetCore;
 using IdentityService.Application.Interfaces;
@@ -6,6 +7,8 @@ using IdentityService.Application.Validators;
 using IdentityService.GrpcServices;
 using IdentityService.Infrastructure.Persistence;
 using IdentityService.Middleware;
+using IdentityService.Security;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
@@ -32,7 +35,34 @@ try
     builder.Services.AddFluentValidationAutoValidation();
     builder.Services.AddValidatorsFromAssemblyContaining<CreateUserValidator>();
 
-    // Response compression reduces payload transfer time on larger list responses (hide network cost)
+    builder.Services.Configure<ApiKeyOptions>(builder.Configuration.GetSection(ApiKeyOptions.SectionName));
+    builder.Services.AddAuthentication(ApiKeyOptions.SchemeName)
+        .AddScheme<AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(ApiKeyOptions.SchemeName, null);
+    builder.Services.AddAuthorization();
+
+    builder.Services.AddRateLimiter(options =>
+    {
+        options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+        options.AddPolicy("api", httpContext =>
+            RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                factory: _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 60,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0
+                }));
+        options.AddPolicy("write", httpContext =>
+            RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                factory: _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 20,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0
+                }));
+    });
+
     builder.Services.AddResponseCompression(options =>
     {
         options.EnableForHttps = true;
@@ -42,22 +72,30 @@ try
     builder.Services.Configure<BrotliCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
     builder.Services.Configure<GzipCompressionProviderOptions>(o => o.Level = CompressionLevel.Fastest);
 
-    // Short-lived output cache for hot read endpoints (hide repeated DB latency)
     builder.Services.AddOutputCache(options =>
     {
         options.AddBasePolicy(b => b.Expire(TimeSpan.FromSeconds(10)).Tag("users"));
         options.AddPolicy("UserById", b => b.Expire(TimeSpan.FromSeconds(30)).SetVaryByRouteValue("id").Tag("users"));
     });
 
+    builder.Services.AddCors(options =>
+    {
+        options.AddPolicy("default", policy =>
+        {
+            var origins = builder.Configuration["Security:AllowedOrigins"]?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                          ?? Array.Empty<string>();
+            if (origins.Length == 0)
+                policy.SetIsOriginAllowed(_ => false); // deny all browser origins by default
+            else
+                policy.WithOrigins(origins).AllowAnyHeader().AllowAnyMethod();
+        });
+    });
+
     var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
         ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is missing.");
 
-    // Pooling + timeouts on the connection string (reduce queueing under load)
     builder.Services.AddDbContext<IdentityDbContext>(options =>
-        options.UseNpgsql(connectionString, npgsql =>
-        {
-            npgsql.CommandTimeout(5); // hard bound on DB stage latency
-        }));
+        options.UseNpgsql(connectionString, npgsql => npgsql.CommandTimeout(5)));
 
     builder.Services.AddScoped<IUserRepository, UserRepository>();
     builder.Services.AddScoped<UserAppService>();
@@ -68,6 +106,27 @@ try
     builder.Services.AddSwaggerGen(c =>
     {
         c.SwaggerDoc("v1", new() { Title = "Identity Service API", Version = "v1" });
+        c.AddSecurityDefinition("ApiKey", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+        {
+            Description = "API Key via X-Api-Key header",
+            Name = "X-Api-Key",
+            In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+            Type = Microsoft.OpenApi.Models.SecuritySchemeType.ApiKey
+        });
+        c.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
+        {
+            {
+                new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+                {
+                    Reference = new Microsoft.OpenApi.Models.OpenApiReference
+                    {
+                        Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
+                        Id = "ApiKey"
+                    }
+                },
+                Array.Empty<string>()
+            }
+        });
     });
 
     var app = builder.Build();
@@ -78,21 +137,27 @@ try
         db.Database.Migrate();
     }
 
-    // Order: latency outermost so it includes everything
+    app.UseMiddleware<SecurityHeadersMiddleware>();
     app.UseMiddleware<LatencyMiddleware>();
     app.UseMiddleware<ExceptionHandlingMiddleware>();
     app.UseResponseCompression();
+    app.UseRateLimiter();
+    app.UseCors("default");
     app.UseOutputCache();
 
-    if (app.Environment.IsDevelopment())
+    var swaggerEnabled = builder.Configuration.GetValue("Swagger:Enabled", app.Environment.IsDevelopment());
+    if (swaggerEnabled)
     {
         app.UseSwagger();
         app.UseSwaggerUI();
     }
 
+    app.UseAuthentication();
+    app.UseAuthorization();
+
     app.MapControllers();
     app.MapGrpcService<UserGrpcService>();
-    app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
+    app.MapGet("/health", () => Results.Ok(new { status = "healthy" })).AllowAnonymous();
 
     app.Run();
 }

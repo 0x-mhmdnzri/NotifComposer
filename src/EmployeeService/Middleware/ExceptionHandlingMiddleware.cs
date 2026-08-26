@@ -7,11 +7,16 @@ public class ExceptionHandlingMiddleware
 {
     private readonly RequestDelegate _next;
     private readonly ILogger<ExceptionHandlingMiddleware> _logger;
+    private readonly IHostEnvironment _env;
 
-    public ExceptionHandlingMiddleware(RequestDelegate next, ILogger<ExceptionHandlingMiddleware> logger)
+    public ExceptionHandlingMiddleware(
+        RequestDelegate next,
+        ILogger<ExceptionHandlingMiddleware> logger,
+        IHostEnvironment env)
     {
         _next = next;
         _logger = logger;
+        _env = env;
     }
 
     public async Task InvokeAsync(HttpContext context)
@@ -22,25 +27,34 @@ public class ExceptionHandlingMiddleware
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unhandled exception");
+            _logger.LogError(ex, "Unhandled exception on {Method} {Path}",
+                context.Request.Method, context.Request.Path);
             await HandleExceptionAsync(context, ex);
         }
     }
 
-    private static Task HandleExceptionAsync(HttpContext context, Exception exception)
+    private Task HandleExceptionAsync(HttpContext context, Exception exception)
     {
-        var code = exception switch
+        var (code, clientMessage) = exception switch
         {
-            InvalidOperationException => HttpStatusCode.BadRequest,
-            ArgumentException => HttpStatusCode.BadRequest,
-            KeyNotFoundException => HttpStatusCode.NotFound,
-            _ => HttpStatusCode.InternalServerError
+            InvalidOperationException or ArgumentException =>
+                (HttpStatusCode.BadRequest, exception.Message),
+            KeyNotFoundException =>
+                (HttpStatusCode.NotFound, "Resource not found."),
+            UnauthorizedAccessException =>
+                (HttpStatusCode.Unauthorized, "Unauthorized."),
+            _ =>
+                (HttpStatusCode.InternalServerError,
+                    _env.IsDevelopment()
+                        ? "An unexpected error occurred. See server logs for details."
+                        : "An unexpected error occurred.")
         };
 
         var result = JsonSerializer.Serialize(new
         {
-            error = exception.Message,
-            statusCode = (int)code
+            error = clientMessage,
+            statusCode = (int)code,
+            traceId = context.TraceIdentifier
         });
 
         context.Response.ContentType = "application/json";

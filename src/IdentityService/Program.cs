@@ -1,5 +1,6 @@
 using FluentValidation;
 using FluentValidation.AspNetCore;
+using IdentityService.Application.Interfaces;
 using IdentityService.Application.Services;
 using IdentityService.Application.Validators;
 using IdentityService.GrpcServices;
@@ -19,35 +20,28 @@ try
 
     builder.Host.UseSerilog();
 
-    // Dual ports: 8080 HTTP, 8081 gRPC (HTTP/2)
     builder.WebHost.ConfigureKestrel(options =>
     {
-        options.ListenAnyIP(8080); // REST + Swagger
-        options.ListenAnyIP(8081, listenOptions =>
-        {
-            listenOptions.Protocols = HttpProtocols.Http2;
-        });
+        options.ListenAnyIP(8080);
+        options.ListenAnyIP(8081, o => o.Protocols = HttpProtocols.Http2);
     });
 
-    // Controllers + Validation
     builder.Services.AddControllers();
     builder.Services.AddFluentValidationAutoValidation();
     builder.Services.AddValidatorsFromAssemblyContaining<CreateUserValidator>();
 
-    // EF Core
     var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
         ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is missing.");
 
     builder.Services.AddDbContext<IdentityDbContext>(options =>
         options.UseNpgsql(connectionString));
 
-    // Application services
+    // DIP: depend on abstractions
+    builder.Services.AddScoped<IUserRepository, UserRepository>();
     builder.Services.AddScoped<UserAppService>();
 
-    // gRPC
     builder.Services.AddGrpc();
 
-    // Swagger
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddSwaggerGen(c =>
     {
@@ -56,7 +50,6 @@ try
 
     var app = builder.Build();
 
-    // Auto-migrate
     using (var scope = app.Services.CreateScope())
     {
         var db = scope.ServiceProvider.GetRequiredService<IdentityDbContext>();
@@ -73,8 +66,6 @@ try
 
     app.MapControllers();
     app.MapGrpcService<UserGrpcService>();
-
-    // Health for docker
     app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 
     app.Run();

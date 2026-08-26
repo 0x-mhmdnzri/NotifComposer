@@ -1,22 +1,22 @@
 # Backend .NET Code Challenge – Employee Management Microservices
 
-سیستم ساده مدیریت کارکنان با معماری **Microservice** شامل سه سرویس مستقل:
-
-| سرویس | مسئولیت |
-|-------|---------|
-| **Identity Service** | مدیریت کاربران + gRPC |
-| **Employee Service** | مدیریت کارکنان + چک gRPC + ارسال اعلان |
-| **Notification Service** | ثبت اعلان‌ها |
+سیستم مدیریت کارکنان با معماری **Microservice** + **SOLID** + **Transactional Outbox/Inbox** (TransactionalBox).
 
 ## معماری
 
 ```
-┌─────────────────┐     gRPC (UserExists)     ┌─────────────────┐
-│  Employee       │ ─────────────────────────► │  Identity       │
-│  Service        │                            │  Service        │
-└────────┬────────┘                            └─────────────────┘
-         │ HTTP fire-and-forget
-         │ (اگر در دسترس نباشد فقط Log می‌شود)
+┌─────────────────┐     gRPC (sync)      ┌─────────────────┐
+│  Employee       │ ───────────────────► │  Identity       │
+│  Service        │                      │  Service        │
+└────────┬────────┘                      └─────────────────┘
+         │
+         │ Transactional Outbox (same DB transaction)
+         │ EmployeeCreatedEvent
+         ▼
+    ┌─────────┐
+    │  Kafka  │
+    └────┬────┘
+         │ Transactional Inbox (exactly-once via dedup)
          ▼
 ┌─────────────────┐
 │  Notification   │
@@ -24,117 +24,72 @@
 └─────────────────┘
 ```
 
-- هر سرویس **دیتابیس PostgreSQL مستقل** دارد.
-- قبل از ایجاد کارمند، وجود User از طریق **gRPC** بررسی می‌شود.
-- پس از ایجاد موفق کارمند، یک اعلان به Notification Service ارسال می‌شود.
-- اگر Notification در دسترس نباشد، عملیات ثبت کارمند **Rollback نمی‌شود** و فقط خطا لاگ می‌شود.
+### اصول طراحی
 
-## اجرای پروژه
+| اصل | پیاده‌سازی |
+|-----|------------|
+| **SRP** | Repository / Application Service / Handler / Client جدا |
+| **DIP** | وابستگی به اینترفیس (`IEmployeeRepository`, `IIdentityClient`, ...) |
+| **ISP** | اینترفیس‌های کوچک و متمرکز |
+| **OCP** | افزودن Handler جدید بدون تغییر کد موجود |
+| **Outbox/Inbox** | `TransactionalBox` + EF Core + Kafka |
 
-فقط یک دستور:
+- قبل از ایجاد کارمند، وجود User از طریق **gRPC** چک می‌شود (sync).
+- پس از ایجاد موفق کارمند، رویداد در **همان تراکنش دیتابیس** در Outbox ذخیره می‌شود.
+- Background job پیام را به Kafka می‌فرستد (at-least-once).
+- NotificationService با Inbox پیام را دریافت و با **exactly-once** (IdempotentInboxKey) پردازش می‌کند.
+- اگر Notification یا Kafka موقتاً در دسترس نباشد، ثبت کارمند **Rollback نمی‌شود**.
+
+> ⚠️ TransactionalBox هنوز به‌صورت رسمی Production-ready اعلام نشده (alpha). برای چالش کد و یادگیری مناسب است.
+
+## اجرا
 
 ```bash
 docker compose up --build
 ```
 
-پس از بالا آمدن سرویس‌ها:
+| سرویس | Swagger | Port |
+|-------|---------|------|
+| Identity | http://localhost:5001/swagger | 5001 |
+| Employee | http://localhost:5003/swagger | 5003 |
+| Notification | http://localhost:5005/swagger | 5005 |
+| Kafka | localhost:9092 | 9092 |
 
-| سرویس                 | Swagger URL                        | Port |
-|-----------------------|------------------------------------|------|
-| Identity Service      | http://localhost:5001/swagger      | 5001 |
-| Employee Service      | http://localhost:5003/swagger      | 5003 |
-| Notification Service  | http://localhost:5005/swagger      | 5005 |
+## API ها
 
-- gRPC Identity (داخل شبکه Docker): `http://identity-service:8081`
+### Identity
+- `POST /api/users`
+- `GET /api/users/{id}`
+- `GET /api/users?search=&isActive=&page=&pageSize=`
 
-## API های اصلی
+### Employee
+- `POST /api/employees` — ایجاد + Outbox event
+- `PUT /api/employees/{id}`
+- `GET /api/employees/{id}`
+- `GET /api/employees?department=&position=&userId=&page=&pageSize=`
+- `PATCH /api/employees/{id}/preferences`
 
-### Identity Service
-- `POST /api/users` – ایجاد کاربر  
-  Body: `{ "fullName": "علی رضایی", "mobile": "09121234567" }`
-- `GET /api/users/{id}` – دریافت کاربر
-- `GET /api/users?search=&isActive=&page=1&pageSize=10` – لیست + Pagination + Filtering
-
-### Employee Service
-- `POST /api/employees` – ایجاد کارمند (با چک gRPC)  
-  Body مثال:
-  ```json
-  {
-    "userId": "...",
-    "department": "IT",
-    "position": "Backend Developer",
-    "employmentDate": "2024-01-15T00:00:00Z",
-    "preferences": { "language": "fa", "theme": "dark", "receiveEmail": true, "receiveSms": false }
-  }
-  ```
-- `PUT /api/employees/{id}` – ویرایش
-- `GET /api/employees/{id}` – دریافت
-- `GET /api/employees?department=&position=&userId=&page=1&pageSize=10` – لیست
-- `PATCH /api/employees/{id}/preferences` – بروزرسانی Preferences (jsonb)
-
-### Notification Service
-- `POST /api/notifications` – ثبت اعلان
-- `GET /api/notifications/{id}` – دریافت
-- `GET /api/notifications?userId=&page=1&pageSize=10` – لیست
-
-همه APIها Response Schema دارند (Swagger).
-
-## قابلیت‌های پیاده‌سازی شده
-
-- CRUD کامل
-- FluentValidation
-- Pagination + Filtering
-- Logging (Serilog)
-- Exception Handling مرکزی
-- gRPC بین Employee و Identity
-- Fire-and-forget به Notification (بدون rollback)
-- Preferences به صورت **jsonb** در PostgreSQL
-- EF Core Migration (auto-apply در startup)
-- تمام تنظیمات از **Environment Variable**
-- Docker + Docker Compose کامل
+### Notification
+- `POST /api/notifications` (دستی)
+- `GET /api/notifications/{id}`
+- `GET /api/notifications?userId=&page=&pageSize=`
 
 ## تکنولوژی‌ها
 
 - ASP.NET Core 8
-- Entity Framework Core + Npgsql
-- PostgreSQL 16
-- gRPC
+- EF Core + PostgreSQL (Npgsql)
+- gRPC (Identity check)
+- **TransactionalBox** (Outbox/Inbox) + Kafka
 - FluentValidation
 - Serilog
-- Swagger / OpenAPI
-- Docker & Docker Compose
+- Swagger
+- Docker Compose
 
-## ساختار پروژه
+## ساختار لایه‌ها (هر سرویس)
 
 ```
-├── docker-compose.yml
-├── README.md
-└── src/
-    ├── IdentityService/
-    │   ├── Domain/
-    │   ├── Application/
-    │   ├── Infrastructure/
-    │   ├── Controllers/
-    │   ├── Grpc/
-    │   ├── Protos/
-    │   └── Migrations/
-    ├── EmployeeService/
-    │   ├── Domain/
-    │   ├── Application/
-    │   ├── Infrastructure/
-    │   ├── Controllers/
-    │   ├── Protos/
-    │   └── Migrations/
-    └── NotificationService/
-        ├── Domain/
-        ├── Application/
-        ├── Infrastructure/
-        ├── Controllers/
-        └── Migrations/
+Domain/          → Entities (pure)
+Application/     → Interfaces, DTOs, Validators, Services, Messages, Handlers
+Infrastructure/  → Persistence (DbContext + Repositories), Clients (gRPC)
+API/             → Controllers, Middleware, Program.cs
 ```
-
-لایه‌بندی نسبتاً سبک DDD رعایت شده (Entity با behavior، جداسازی مسئولیت‌ها).
-
-## نکته امنیتی
-
-اگر Personal Access Token را در چت یا جایی به اشتراک گذاشته‌اید، فوراً آن را از GitHub revoke کنید.

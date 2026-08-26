@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+option csharp_namespace = "IdentityService.Grpc";
+
+package identity;
+
+service UserService {
+  rpc GetUserById (GetUserByIdRequest) returns (UserResponse);
+  rpc UserExists (UserExistsRequest) returns (UserExistsResponse);
+}
+
+message GetUserByIdRequest {
+  string id = 1;
+}
+
+message UserExistsRequest {
+  string id = 1;
+}
+
+message UserExistsResponse {
+  bool exists = 1;
+  bool is_active = 2;
+}
+
+message UserResponse {
+  string id = 1;
+  string full_name = 2;
+  string mobile = 3;
+  bool is_active = 4;
+}
